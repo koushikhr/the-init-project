@@ -23,6 +23,15 @@ pub trait PackageManager: Send + Sync + std::fmt::Debug {
     /// Installs a package by its specific ID.
     /// Returns Ok(()) on success, or an Error if it fails.
     async fn install(&self, package_id: &str) -> Result<()>;
+
+    /// Installs multiple packages.
+    /// Can be overridden for optimization (e.g. "pacman -S pkg1 pkg2")
+    async fn install_many(&self, package_ids: &[&str]) -> Result<()> {
+        for id in package_ids {
+            self.install(id).await?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

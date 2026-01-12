@@ -1,31 +1,31 @@
 #!/bin/sh
 set -e
 
-# --- CONFIGURATION ---
+# 1. Configuration
 REPO="koushikhr/the-init-project"
-# FIX: Updated filename to 'the-init-project-linux.tar.gz'
-DOWNLOAD_URL="https://github.com/$REPO/releases/download/v0.1.0/the-init-project-linux.tar.gz"
-# ---------------------
+VERSION="v0.1.0"
+INSTALL_DIR="$HOME/.local/bin/init_project"
+BIN_URL="https://github.com/$REPO/releases/download/$VERSION/init_app"
+CONFIG_URL="https://raw.githubusercontent.com/$REPO/master/apps.toml"
 
-echo "🚀 Initializing Setup..."
+echo "🚀 Installing Init Project..."
 
-# 1. Create a temporary directory safely
-TEMP_DIR=$(mktemp -d)
+# 2. Setup Directory
+mkdir -p "$INSTALL_DIR/icons"
+cd "$INSTALL_DIR" || exit
 
-# 2. Download and Extract
-echo "⬇️  Downloading from GitHub..."
-if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$DOWNLOAD_URL" | tar -xz -C "$TEMP_DIR"
-elif command -v wget >/dev/null 2>&1; then
-    wget -qO- "$DOWNLOAD_URL" | tar -xz -C "$TEMP_DIR"
-else
-    echo "Error: Need curl or wget installed."
-    exit 1
-fi
+# 3. Download Binary
+echo "⬇️ Downloading Binary..."
+curl -fsSL -o init_app "$BIN_URL"
+chmod +x init_app
 
-# 3. Run the App
-echo "✅ Starting Init..."
-(cd "$TEMP_DIR" && ./init_app)
+# 4. Download Config & Icons (Temporary workaround until Remote Manifests)
+echo "⬇️ Downloading Config..."
+curl -fsSL -o apps.toml "$CONFIG_URL"
+# (Optional: You would loop here to download icons if needed,
+# or zip them in the release. For now, we assume default icon)
 
-# 4. Cleanup (Optional)
-# rm -rf "$TEMP_DIR"
+# 5. Add to Path (Optional, or just tell user where it is)
+echo ""
+echo "✅ Installation Complete!"
+echo "Run it with: $INSTALL_DIR/init_app"

@@ -41,4 +41,26 @@ impl PackageManager for Pacman {
             Err(anyhow::anyhow!("Pacman failed to install {}", package_id))
         }
     }
+
+    async fn install_many(&self, package_ids: &[&str]) -> Result<()> {
+        if package_ids.is_empty() {
+            return Ok(());
+        }
+
+        println!("Installing batch via Pacman: {:?}", package_ids);
+
+        let status = Command::new("pacman")
+            .arg("-S")
+            .arg("--noconfirm")
+            .arg("--needed")
+            .args(package_ids)
+            .status()
+            .await?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Pacman failed to install batch"))
+        }
+    }
 }

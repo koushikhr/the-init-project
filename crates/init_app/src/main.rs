@@ -3,7 +3,7 @@ mod views {
     pub mod card;
 }
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc; // REQUIRED for passing Traits in Messages
 
 use iced::{
@@ -22,6 +22,9 @@ pub fn main() -> iced::Result {
         .run()
 }
 
+// A batch of packages to be installed by a specific manager
+type Batch = (Arc<Box<dyn PackageManager>>, Vec<String>);
+
 struct InitApp {
     screen: Screen,
     apps: Vec<App>,
@@ -30,13 +33,17 @@ struct InitApp {
     loading: bool,
     detected_os: String,
 
-    // FIX: Store as Arc so we can share it with async tasks
-    manager: Option<Arc<Box<dyn PackageManager>>>,
+    // Store multiple detected managers
+    managers: Vec<Arc<Box<dyn PackageManager>>>,
 
-    install_queue: Vec<String>,
-    current_install: Option<String>,
+    // Queue of batches to install
+    install_queue: Vec<Batch>,
+    // Current batch being installed (Manager Name, Package Count)
+    current_install: Option<(String, usize)>,
     install_log: Vec<String>,
     progress: f32,
+    total_tasks: usize,
+    completed_tasks: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,8 +55,7 @@ enum Screen {
 
 #[derive(Debug, Clone)]
 enum Message {
-    // FIX: The Result now contains Arc<Box<...>> to satisfy Clone/Debug
-    InitializationConfigured(Result<(Vec<App>, Arc<Box<dyn PackageManager>>), String>),
+    InitializationConfigured(Result<(Vec<App>, Vec<Arc<Box<dyn PackageManager>>>), String>),
     Toggle(String, bool),
     ProceedToDashboard,
     StartInstall,
@@ -69,11 +75,13 @@ impl InitApp {
                 selected_apps: vec![],
                 loading: true,
                 detected_os: os,
-                manager: None,
+                managers: vec![],
                 install_queue: vec![],
                 current_install: None,
                 install_log: vec![],
                 progress: 0.0,
+                total_tasks: 0,
+                completed_tasks: 0,
             },
             Task::perform(initialize_app(), Message::InitializationConfigured),
         )
@@ -81,13 +89,13 @@ impl InitApp {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::InitializationConfigured(Ok((apps, manager))) => {
+            Message::InitializationConfigured(Ok((apps, managers))) => {
                 println!("✅ Loaded {} apps", apps.len());
-                println!("✅ Detected Manager: {}", manager.name());
+                println!("✅ Detected {} Managers", managers.len());
 
                 self.loading = false;
                 self.apps = apps;
-                self.manager = Some(manager); // Already an Arc
+                self.managers = managers;
 
                 let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
                 for (index, app) in self.apps.iter().enumerate() {
@@ -119,45 +127,63 @@ impl InitApp {
 
             Message::StartInstall => {
                 self.screen = Screen::Installing;
-                self.install_queue = self.selected_apps.clone();
                 self.install_log.clear();
                 self.progress = 0.0;
-                Task::perform(async {}, |_| Message::InstallNext)
+
+                // Group selected apps by manager
+                let mut batches: HashMap<usize, Vec<String>> = HashMap::new(); // Manager Index -> Package IDs
+
+                for app_id in &self.selected_apps {
+                    if let Some(app) = self.apps.iter().find(|a| a.id == *app_id) {
+                        // Find the first manager that supports this app
+                        for (idx, mgr) in self.managers.iter().enumerate() {
+                            if let Some(pkg_id) = app.packages.get(mgr.id()) {
+                                batches.entry(idx).or_default().push(pkg_id.clone());
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Convert to Queue
+                self.install_queue = batches
+                    .into_iter()
+                    .map(|(idx, pkgs)| (self.managers[idx].clone(), pkgs))
+                    .collect();
+
+                self.total_tasks = self.install_queue.len();
+                self.completed_tasks = 0;
+
+                if self.install_queue.is_empty() {
+                    self.install_log
+                        .push("No compatible packages found for selected apps.".to_string());
+                    self.progress = 1.0;
+                    Task::none()
+                } else {
+                    Task::perform(async {}, |_| Message::InstallNext)
+                }
             }
 
             Message::InstallNext => {
-                if let Some(app_id) = self.install_queue.pop() {
-                    self.current_install = Some(app_id.clone());
-                    self.install_log
-                        .push(format!("Starting installation: {}...", app_id));
+                if let Some((mgr, pkgs)) = self.install_queue.pop() {
+                    let mgr_name = mgr.name().to_string();
+                    let pkg_count = pkgs.len();
+                    self.current_install = Some((mgr_name.clone(), pkg_count));
 
-                    let app = self.apps.iter().find(|a| a.id == app_id).cloned();
-
-                    // FIX: Clone the Arc (cheap) to pass to async task
-                    let manager_arc = self.manager.as_ref().unwrap().clone();
+                    self.install_log.push(format!(
+                        "🚀 Starting batch install via {} ({} packages)...",
+                        mgr_name, pkg_count
+                    ));
 
                     return Task::perform(
                         async move {
-                            let Some(target_app) = app else {
-                                return (app_id, false);
-                            };
-                            let mgr_id = manager_arc.id();
-
-                            let Some(pkg_name) = target_app.packages.get(mgr_id) else {
-                                println!("❌ No package ID found for manager '{}'", mgr_id);
-                                return (app_id, false);
-                            };
-
-                            println!("🚀 Calling Manager {} to install {}", mgr_id, pkg_name);
-
-                            // Call the trait method directly!
-                            let result = manager_arc.install(pkg_name).await;
+                            let pkg_refs: Vec<&str> = pkgs.iter().map(|s| s.as_str()).collect();
+                            let result = mgr.install_many(&pkg_refs).await;
 
                             match result {
-                                Ok(_) => (app_id, true),
+                                Ok(_) => (format!("Batch via {}", mgr.name()), true),
                                 Err(e) => {
-                                    println!("❌ Install Failed: {}", e);
-                                    (app_id, false)
+                                    (format!("Batch via {} Failed: {}", mgr.name(), e), false)
                                 }
                             }
                         },
@@ -171,18 +197,21 @@ impl InitApp {
                 Task::none()
             }
 
-            Message::InstallFinished(id, success) => {
+            Message::InstallFinished(msg, success) => {
                 if success {
                     self.install_log
-                        .push(format!("✅ {} installed successfully.", id));
+                        .push(format!("✅ {} completed successfully.", msg));
                 } else {
-                    self.install_log
-                        .push(format!("❌ {} failed to install.", id));
+                    self.install_log.push(format!("❌ {}", msg));
                 }
 
-                let total = self.selected_apps.len() as f32;
-                let remaining = self.install_queue.len() as f32;
-                self.progress = (total - remaining) / total;
+                self.completed_tasks += 1;
+
+                if self.total_tasks > 0 {
+                    self.progress = self.completed_tasks as f32 / self.total_tasks as f32;
+                } else {
+                    self.progress = 1.0;
+                }
 
                 Task::perform(async {}, |_| Message::InstallNext)
             }
@@ -213,11 +242,15 @@ impl InitApp {
     }
 
     fn view_welcome(&self) -> Element<'_, Message> {
-        let mgr_name = self
-            .manager
-            .as_ref()
-            .map(|m| m.name())
-            .unwrap_or("Scanning...");
+        let mgr_names = if self.managers.is_empty() {
+            "None Detected".to_string()
+        } else {
+            self.managers
+                .iter()
+                .map(|m| m.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
 
         let title = text("Welcome to The Init Project")
             .size(32)
@@ -240,8 +273,8 @@ impl InitApp {
         .spacing(10);
 
         let manager_info = row![
-            text("Primary Manager:").color(style::TEXT_SECONDARY),
-            text(mgr_name).color(style::SUCCESS)
+            text("Detected Managers:").color(style::TEXT_SECONDARY),
+            text(mgr_names).color(style::SUCCESS)
         ]
         .spacing(10);
 
@@ -326,7 +359,12 @@ impl InitApp {
                 for &app_idx in chunk {
                     let app = &self.apps[app_idx];
                     let is_selected = self.selected_apps.contains(&app.id);
-                    let is_avail = !app.packages.is_empty();
+
+                    // Check if ANY active manager can install this app
+                    let is_avail = self
+                        .managers
+                        .iter()
+                        .any(|m| app.packages.contains_key(m.id()));
 
                     row_widget = row_widget.push(views::card::view(
                         app,
@@ -433,7 +471,7 @@ impl InitApp {
 }
 
 // FIX: Helper returns Arc to satisfy Message requirements
-async fn initialize_app() -> Result<(Vec<App>, Arc<Box<dyn PackageManager>>), String> {
+async fn initialize_app() -> Result<(Vec<App>, Vec<Arc<Box<dyn PackageManager>>>), String> {
     let current = std::env::current_dir().map_err(|e| e.to_string())?;
     let path = current.join("apps.toml");
 
@@ -441,8 +479,8 @@ async fn initialize_app() -> Result<(Vec<App>, Arc<Box<dyn PackageManager>>), St
         .await
         .map_err(|e| format!("Manifest Error: {}", e))?;
 
-    let manager = detectors::get_system_manager();
+    let managers = detectors::detect_managers();
+    let managers_arc = managers.into_iter().map(Arc::new).collect();
 
-    // Wrap the manager in Arc
-    Ok((manifest.apps, Arc::new(manager)))
+    Ok((manifest.apps, managers_arc))
 }
