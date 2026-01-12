@@ -55,7 +55,7 @@ enum Screen {
 
 #[derive(Debug, Clone)]
 enum Message {
-    InitializationConfigured(Result<(Vec<App>, Vec<Arc<Box<dyn PackageManager>>>), String>),
+    InitializationConfigured(Result<(Option<Vec<App>>, Vec<Arc<Box<dyn PackageManager>>>), String>),
     Toggle(String, bool),
     ProceedToDashboard,
     StartInstall,
@@ -89,20 +89,24 @@ impl InitApp {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::InitializationConfigured(Ok((apps, managers))) => {
-                println!("✅ Loaded {} apps", apps.len());
+            Message::InitializationConfigured(Ok((apps_opt, managers))) => {
                 println!("✅ Detected {} Managers", managers.len());
-
-                self.loading = false;
-                self.apps = apps;
                 self.managers = managers;
 
-                let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-                for (index, app) in self.apps.iter().enumerate() {
-                    let cat = app.category.clone().unwrap_or("General".to_string());
-                    groups.entry(cat).or_default().push(index);
+                if let Some(apps) = apps_opt {
+                    println!("✅ Loaded {} apps", apps.len());
+                    self.apps = apps;
+                    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+                    for (index, app) in self.apps.iter().enumerate() {
+                        let cat = app.category.clone().unwrap_or("General".to_string());
+                        groups.entry(cat).or_default().push(index);
+                    }
+                    self.grouped_apps = groups;
+                } else {
+                    println!("⚠️ No apps loaded (Manifest error/missing).");
                 }
-                self.grouped_apps = groups;
+
+                self.loading = false;
                 Task::none()
             }
             Message::InitializationConfigured(Err(e)) => {
@@ -471,20 +475,67 @@ impl InitApp {
 }
 
 // FIX: Helper returns Arc to satisfy Message requirements
-async fn initialize_app() -> Result<(Vec<App>, Vec<Arc<Box<dyn PackageManager>>>), String> {
-    // Try to find apps.toml relative to the executable first, fall back to current dir
-    let path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.join("apps.toml")))
-        .or_else(|| std::env::current_dir().ok().map(|p| p.join("apps.toml")))
-        .ok_or("Could not determine path to apps.toml".to_string())?;
 
-    let manifest = manifest::load_manifest(path.to_str().unwrap())
-        .await
-        .map_err(|e| format!("Manifest Error: {} ({})", e, path.display()))?;
+async fn initialize_app() -> Result<(Option<Vec<App>>, Vec<Arc<Box<dyn PackageManager>>>), String> {
+    // 1. Detect Managers FIRST
 
     let managers = detectors::detect_managers();
-    let managers_arc = managers.into_iter().map(Arc::new).collect();
 
-    Ok((manifest.apps, managers_arc))
+    let managers_arc: Vec<Arc<Box<dyn PackageManager>>> =
+        managers.into_iter().map(Arc::new).collect();
+
+    // 2. Find apps.toml (Check existence!)
+
+    let mut config_path = None;
+
+    // Check relative to executable (Distribution mode)
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            let path = parent.join("apps.toml");
+
+            if path.exists() {
+                config_path = Some(path);
+            }
+        }
+    }
+
+    // Fallback: Check current working directory (Dev mode / cargo run)
+
+    if config_path.is_none() {
+        if let Ok(cwd) = std::env::current_dir() {
+            let path = cwd.join("apps.toml");
+
+            if path.exists() {
+                config_path = Some(path);
+            }
+        }
+    }
+
+    let path_res =
+        config_path.ok_or("Could not locate apps.toml in Executable dir or CWD".to_string());
+
+    match path_res {
+        Ok(path) => {
+            match manifest::load_manifest(path.to_str().unwrap()).await {
+                Ok(manifest) => Ok((Some(manifest.apps), managers_arc)),
+
+                Err(e) => {
+                    println!("Manifest Load Error: {} ({})", e, path.display());
+
+                    // Return managers even if manifest fails
+
+                    Ok((None, managers_arc))
+                }
+            }
+        }
+
+        Err(e) => {
+            println!("Manifest Path Error: {}", e);
+
+            // Return managers even if manifest path not found
+
+            Ok((None, managers_arc))
+        }
+    }
 }

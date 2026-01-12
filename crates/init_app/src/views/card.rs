@@ -12,15 +12,24 @@ pub fn view<'a, Message: 'a + Clone>(
     on_toggle: impl Fn(String, bool) -> Message,
 ) -> Element<'a, Message> {
     // 1. Path Logic
-    // Resolve relative to executable, fallback to current dir
-    let base_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-
     let raw_path = app.icon.clone().unwrap_or("icons/default.svg".to_string());
-    let abs_path = base_dir.join(&raw_path);
-    let path_str = abs_path.to_string_lossy().to_string();
+
+    // Resolve: Check relative to exe first, then CWD
+    let mut final_path = raw_path.clone();
+
+    if let Ok(exe_dir) = std::env::current_exe().and_then(|p| Ok(p.parent().unwrap().to_path_buf())) {
+        let p = exe_dir.join(&raw_path);
+        if p.exists() {
+            final_path = p.to_string_lossy().to_string();
+        } else if let Ok(cwd) = std::env::current_dir() {
+            let p = cwd.join(&raw_path);
+            if p.exists() {
+                 final_path = p.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    let path_str = final_path;
 
     // 2. Icon Widget (Fixed Size + ContentFit)
     let icon: Element<Message> = if raw_path.ends_with(".svg") {
