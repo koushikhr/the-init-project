@@ -1,0 +1,10 @@
+[package]
+name = "init_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+init_core = { path = "../init_core" }
+
+iced = { version = "*", features = ["tokio", "debug", "advanced", "image", "svg"] }
+tokio = "*"
