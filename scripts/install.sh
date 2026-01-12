@@ -4,7 +4,7 @@ set -e
 # --- CONFIGURATION ---
 REPO="https://github.com/koushikhr/the-init-project"
 # This URL points to where to upload the file in Step 4
-DOWNLOAD_URL="https://github.com/koushikhr/the-init-project/releases/download/v0.1.0/init-linux.tar.gz"
+DOWNLOAD_URL="https://github.com/koushikhr/the-init-project/releases/download/v0.1.0/the-init-project-linux.tar.gz"
 # ---------------------
 
 echo "🚀 Initializing Setup..."
