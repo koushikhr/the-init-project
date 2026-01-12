@@ -7,7 +7,7 @@ pub mod manifest;
 
 /// The contract that all package managers (Winget, Apt, Dnf) must follow.
 #[async_trait]
-pub trait PackageManager: Send + Sync {
+pub trait PackageManager: Send + Sync + std::fmt::Debug {
     // It returns the key used in apps.toml (e.g., "winget", "paru")
     fn id(&self) -> &str;
 

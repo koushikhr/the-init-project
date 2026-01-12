@@ -1,9 +1,15 @@
-use iced::{Alignment, Background, Border, Color, Element, Length, Shadow, Task, Theme, Vector};
-// Rename image to 'app_image' to differentiate from the module
-use iced::widget::{
-    button, column, container, image as app_image, row, scrollable, svg, text, tooltip,
-};
+mod style;
+mod views {
+    pub mod card;
+}
 
+use std::collections::BTreeMap;
+use std::sync::Arc; // REQUIRED for passing Traits in Messages
+
+use iced::{
+    Alignment, Color, Element, Length, Subscription, Task, Theme,
+    widget::{Space, button, column, container, progress_bar, row, scrollable, text},
+};
 use init_core::PackageManager;
 use init_core::detectors;
 use init_core::manifest::{self, App};
@@ -12,328 +18,431 @@ pub fn main() -> iced::Result {
     iced::application(InitApp::new, InitApp::update, InitApp::view)
         .title(|_state: &InitApp| "The Init Project".to_string())
         .theme(|_state: &InitApp| Theme::Dark)
+        .subscription(InitApp::subscription)
         .run()
 }
 
 struct InitApp {
+    screen: Screen,
     apps: Vec<App>,
+    grouped_apps: BTreeMap<String, Vec<usize>>,
     selected_apps: Vec<String>,
     loading: bool,
-    error: Option<String>,
+    detected_os: String,
+
+    // FIX: Store as Arc so we can share it with async tasks
+    manager: Option<Arc<Box<dyn PackageManager>>>,
+
     install_queue: Vec<String>,
     current_install: Option<String>,
-    logs: Vec<String>,
-    active_manager_id: String,
+    install_log: Vec<String>,
+    progress: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Screen {
+    Welcome,
+    Dashboard,
+    Installing,
 }
 
 #[derive(Debug, Clone)]
 enum Message {
-    ManifestLoaded(Result<Vec<App>, String>),
-    ToggleApp(String, bool),
+    // FIX: The Result now contains Arc<Box<...>> to satisfy Clone/Debug
+    InitializationConfigured(Result<(Vec<App>, Arc<Box<dyn PackageManager>>), String>),
+    Toggle(String, bool),
+    ProceedToDashboard,
     StartInstall,
     InstallNext,
-    InstallFinished(String, Result<(), String>),
+    InstallFinished(String, bool),
 }
 
 impl InitApp {
     fn new() -> (Self, Task<Message>) {
-        let manager = detectors::get_system_manager();
-        // If your core library trait doesn't implement .id() yet, use a fallback string here
-        // e.g. let manager_id = "pacman".to_string();
-        let manager_id = manager.id().to_string();
+        let os = std::env::consts::OS.to_string();
 
         (
             Self {
+                screen: Screen::Welcome,
                 apps: vec![],
+                grouped_apps: BTreeMap::new(),
                 selected_apps: vec![],
                 loading: true,
-                error: None,
+                detected_os: os,
+                manager: None,
                 install_queue: vec![],
                 current_install: None,
-                logs: vec![format!("Active Manager: {}", manager_id)],
-                active_manager_id: manager_id,
+                install_log: vec![],
+                progress: 0.0,
             },
-            Task::perform(load_apps(), Message::ManifestLoaded),
+            Task::perform(initialize_app(), Message::InitializationConfigured),
         )
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ManifestLoaded(result) => {
+            Message::InitializationConfigured(Ok((apps, manager))) => {
+                println!("✅ Loaded {} apps", apps.len());
+                println!("✅ Detected Manager: {}", manager.name());
+
                 self.loading = false;
-                match result {
-                    Ok(apps) => self.apps = apps,
-                    Err(e) => self.error = Some(format!("Error: {}", e)),
+                self.apps = apps;
+                self.manager = Some(manager); // Already an Arc
+
+                let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+                for (index, app) in self.apps.iter().enumerate() {
+                    let cat = app.category.clone().unwrap_or("General".to_string());
+                    groups.entry(cat).or_default().push(index);
                 }
+                self.grouped_apps = groups;
                 Task::none()
             }
-            Message::ToggleApp(id, is_checked) => {
-                if is_checked {
-                    self.selected_apps.push(id);
-                } else {
-                    self.selected_apps.retain(|x| x != &id);
-                }
+            Message::InitializationConfigured(Err(e)) => {
+                println!("❌ ERROR: {}", e);
+                self.loading = false;
                 Task::none()
             }
+
+            Message::Toggle(id, true) => {
+                self.selected_apps.push(id);
+                Task::none()
+            }
+            Message::Toggle(id, false) => {
+                self.selected_apps.retain(|x| x != &id);
+                Task::none()
+            }
+
+            Message::ProceedToDashboard => {
+                self.screen = Screen::Dashboard;
+                Task::none()
+            }
+
             Message::StartInstall => {
-                if self.selected_apps.is_empty() {
-                    return Task::none();
-                }
+                self.screen = Screen::Installing;
                 self.install_queue = self.selected_apps.clone();
-                self.logs.push("Starting Queue...".to_string());
+                self.install_log.clear();
+                self.progress = 0.0;
                 Task::perform(async {}, |_| Message::InstallNext)
             }
+
             Message::InstallNext => {
                 if let Some(app_id) = self.install_queue.pop() {
                     self.current_install = Some(app_id.clone());
-                    let package_id = self
-                        .apps
-                        .iter()
-                        .find(|a| a.id == app_id)
-                        .and_then(|a| a.packages.get(&self.active_manager_id)) // Smart detection
-                        .cloned();
+                    self.install_log
+                        .push(format!("Starting installation: {}...", app_id));
 
-                    match package_id {
-                        Some(pkg) => {
-                            self.logs.push(format!("Installing {}...", app_id));
-                            Task::perform(install_app(app_id, pkg), |(id, res)| {
-                                Message::InstallFinished(id, res)
-                            })
-                        }
-                        None => {
-                            self.logs.push(format!(
-                                "Skipping {}: Not supported on {}",
-                                app_id, self.active_manager_id
-                            ));
-                            Task::perform(async {}, |_| Message::InstallNext)
-                        }
-                    }
-                } else {
-                    self.current_install = None;
-                    self.logs.push("Done.".to_string());
-                    Task::none()
+                    let app = self.apps.iter().find(|a| a.id == app_id).cloned();
+
+                    // FIX: Clone the Arc (cheap) to pass to async task
+                    let manager_arc = self.manager.as_ref().unwrap().clone();
+
+                    return Task::perform(
+                        async move {
+                            let Some(target_app) = app else {
+                                return (app_id, false);
+                            };
+                            let mgr_id = manager_arc.id();
+
+                            let Some(pkg_name) = target_app.packages.get(mgr_id) else {
+                                println!("❌ No package ID found for manager '{}'", mgr_id);
+                                return (app_id, false);
+                            };
+
+                            println!("🚀 Calling Manager {} to install {}", mgr_id, pkg_name);
+
+                            // Call the trait method directly!
+                            let result = manager_arc.install(pkg_name).await;
+
+                            match result {
+                                Ok(_) => (app_id, true),
+                                Err(e) => {
+                                    println!("❌ Install Failed: {}", e);
+                                    (app_id, false)
+                                }
+                            }
+                        },
+                        |(id, success)| Message::InstallFinished(id, success),
+                    );
                 }
+
+                self.current_install = None;
+                self.install_log.push("All tasks completed!".to_string());
+                self.progress = 1.0;
+                Task::none()
             }
-            Message::InstallFinished(id, result) => {
-                match result {
-                    Ok(_) => self.logs.push(format!("SUCCESS: {}", id)),
-                    Err(e) => self.logs.push(format!("ERROR {}: {}", id, e)),
+
+            Message::InstallFinished(id, success) => {
+                if success {
+                    self.install_log
+                        .push(format!("✅ {} installed successfully.", id));
+                } else {
+                    self.install_log
+                        .push(format!("❌ {} failed to install.", id));
                 }
+
+                let total = self.selected_apps.len() as f32;
+                let remaining = self.install_queue.len() as f32;
+                self.progress = (total - remaining) / total;
+
                 Task::perform(async {}, |_| Message::InstallNext)
             }
         }
     }
 
-    // --- THE COMPLETED CARD VIEW ---
-    fn view_app_card<'a>(&self, app: &'a App) -> Element<'a, Message> {
-        let is_available = app.packages.contains_key(&self.active_manager_id);
-        let is_selected = self.selected_apps.contains(&app.id);
+    fn subscription(&self) -> Subscription<Message> {
+        Subscription::none()
+    }
 
-        // 1. Determine Icon Path (Dynamic)
-        let current_dir = std::env::current_dir().unwrap_or_default();
-        let default_icon = current_dir.join("icons").join("default.svg");
+    fn view(&self) -> Element<'_, Message> {
+        if self.loading {
+            return container(
+                text("Initializing Core...")
+                    .color(style::TEXT_PRIMARY)
+                    .size(20),
+            )
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(style::main_container)
+            .into();
+        }
+        match self.screen {
+            Screen::Welcome => self.view_welcome(),
+            Screen::Dashboard => self.view_dashboard(),
+            Screen::Installing => self.view_installing(),
+        }
+    }
 
-        let icon_path = if let Some(path_str) = &app.icon {
-            // If the path in toml is relative ("icons/firefox.svg"), join it with current dir
-            current_dir.join(path_str).to_string_lossy().to_string()
-        } else {
-            default_icon.to_string_lossy().to_string()
-        };
+    fn view_welcome(&self) -> Element<'_, Message> {
+        let mgr_name = self
+            .manager
+            .as_ref()
+            .map(|m| m.name())
+            .unwrap_or("Scanning...");
 
-        // 2. Build the Icon Widget (SVG vs PNG)
-        let icon_widget: Element<'a, Message> = if icon_path.ends_with(".svg") {
-            // Use the svg() function directly as shown in your example
-            svg(icon_path).width(64).height(64).into()
-        } else {
-            // Fallback for PNG/JPG
-            app_image(icon_path).width(64).height(64).into()
-        };
+        let title = text("Welcome to The Init Project")
+            .size(32)
+            .font(iced::Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            })
+            .color(style::TEXT_PRIMARY);
 
-        // 3. Status Text
-        let status_text = if is_selected {
-            text("✅ Selected")
-                .size(12)
-                .color(Color::from_rgb(0.0, 0.8, 0.0))
-        } else if !is_available {
-            text("Unavailable")
-                .size(12)
-                .color(Color::from_rgb(0.5, 0.5, 0.5))
-        } else {
-            text("Click to Select")
-                .size(12)
-                .color(Color::from_rgb(0.7, 0.7, 0.7))
-        };
+        let sub_title = text("Your universal bootstrap solution.")
+            .size(16)
+            .color(style::TEXT_SECONDARY);
 
-        let card_content = column![
-            container(icon_widget).height(80).center_y(Length::Fill),
-            text(&app.name).size(14).align_y(Alignment::Center),
-            status_text
+        let os_info = row![
+            text("Detected OS:").color(style::TEXT_SECONDARY),
+            text(self.detected_os.to_uppercase())
+                .color(style::ACCENT)
+                .font(iced::Font::MONOSPACE)
         ]
-        .spacing(5)
+        .spacing(10);
+
+        let manager_info = row![
+            text("Primary Manager:").color(style::TEXT_SECONDARY),
+            text(mgr_name).color(style::SUCCESS)
+        ]
+        .spacing(10);
+
+        let system_card = container(column![
+            text("System Environment")
+                .size(14)
+                .color(style::TEXT_SECONDARY),
+            Space::new().height(10.0),
+            os_info,
+            Space::new().height(10.0),
+            manager_info
+        ])
+        .padding(20)
+        .width(Length::Fill)
+        .style(|_t| container::Style {
+            background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.14))),
+            border: iced::Border {
+                radius: 8.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let modal_content = column![
+            title,
+            sub_title,
+            Space::new().height(30.0),
+            system_card,
+            Space::new().height(30.0),
+            button("Proceed to Dashboard")
+                .padding([12, 24])
+                .style(style::primary_button)
+                .on_press(Message::ProceedToDashboard)
+                .width(Length::Fill)
+        ]
+        .spacing(10)
+        .width(400)
         .align_x(Alignment::Center);
 
-        // 4. Style Logic
-        let card_style = move |_theme: &Theme| {
-            if is_selected {
-                container::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.2, 0.25, 0.3))),
-                    border: Border {
-                        color: Color::from_rgb(0.4, 1.0, 0.4),
-                        width: 2.0,
-                        radius: 8.0.into(),
-                    },
-                    ..Default::default()
-                }
-            } else if !is_available {
-                container::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
-                    text_color: Some(Color::from_rgb(0.5, 0.5, 0.5)),
-                    border: Border {
-                        color: Color::from_rgb(0.3, 0.3, 0.3),
-                        width: 1.0,
-                        radius: 8.0.into(),
-                    },
-                    ..Default::default()
-                }
-            } else {
-                container::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
-                    border: Border {
-                        color: Color::from_rgb(0.4, 0.4, 0.4),
-                        width: 1.0,
-                        radius: 8.0.into(),
-                    },
-                    shadow: Shadow {
-                        color: Color::BLACK,
-                        offset: Vector::new(0.0, 2.0),
-                        blur_radius: 5.0,
-                    },
-                    ..Default::default()
-                }
-            }
-        };
-
-        // 5. Button Wrapper
-        let mut btn = button(
-            container(card_content)
-                .width(Length::Fixed(150.0))
-                .height(Length::Fixed(160.0))
-                .padding(10)
-                .style(card_style),
+        container(
+            container(modal_content)
+                .padding(40)
+                .style(style::welcome_modal),
         )
-        .padding(0);
-
-        // 6. Interaction
-        if is_available {
-            btn = btn.on_press(Message::ToggleApp(app.id.clone(), !is_selected));
-        }
-
-        // 7. Tooltip
-        tooltip(
-            btn,
-            container(text(
-                app.description
-                    .clone()
-                    .unwrap_or("No description".to_string()),
-            ))
-            .padding(5),
-            tooltip::Position::Bottom,
-        )
-        .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
-            border: Border {
-                color: Color::WHITE,
-                width: 1.0,
-                radius: 4.0.into(),
-            },
-            text_color: Some(Color::WHITE),
-            ..Default::default()
-        })
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(style::main_container)
         .into()
     }
 
-    fn view(&self) -> Element<Message> {
-        let content: Element<Message> = if self.loading {
-            container(text("Loading...").size(30))
-                .center_x(Length::Fill)
-                .into()
-        } else {
-            // IMPERATIVE GRID LOOP (Reliable)
-            let mut grid_column = column![].spacing(20);
-            for chunk in self.apps.chunks(3) {
-                let mut chunk_row = row![].spacing(20);
-                for app in chunk {
-                    chunk_row = chunk_row.push(self.view_app_card(app));
-                }
-                grid_column = grid_column.push(chunk_row);
-            }
+    fn view_dashboard(&self) -> Element<'_, Message> {
+        let header = row![
+            column![
+                text("Init Dashboard").size(24).color(style::TEXT_PRIMARY),
+                text("Select apps to install")
+                    .size(14)
+                    .color(style::TEXT_SECONDARY),
+            ],
+            Space::new().width(Length::Fill),
+        ]
+        .width(Length::Fill)
+        .align_y(Alignment::Center);
 
-            scrollable(grid_column)
-                .height(Length::Fill)
-                .width(Length::Fill)
-                .into()
+        let mut main_content = column![header].spacing(30);
+
+        for (category, app_indices) in &self.grouped_apps {
+            let cat_title = text(category)
+                .size(18)
+                .color(style::ACCENT)
+                .font(iced::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                });
+
+            let mut grid = column![].spacing(20);
+
+            for chunk in app_indices.chunks(4) {
+                let mut row_widget = row![].spacing(20).height(Length::Fixed(180.0));
+
+                for &app_idx in chunk {
+                    let app = &self.apps[app_idx];
+                    let is_selected = self.selected_apps.contains(&app.id);
+                    let is_avail = !app.packages.is_empty();
+
+                    row_widget = row_widget.push(views::card::view(
+                        app,
+                        is_selected,
+                        is_avail,
+                        Message::Toggle,
+                    ));
+                }
+                grid = grid.push(row_widget);
+            }
+            main_content = main_content.push(column![cat_title, grid].spacing(15));
+        }
+
+        let bottom_bar = if !self.selected_apps.is_empty() {
+            container(
+                row![
+                    text(format!("{} apps selected", self.selected_apps.len()))
+                        .color(style::TEXT_PRIMARY),
+                    Space::new().width(Length::Fill),
+                    button("Install Selected")
+                        .padding([10, 20])
+                        .style(style::primary_button)
+                        .on_press(Message::StartInstall)
+                ]
+                .align_y(Alignment::Center),
+            )
+            .padding(20)
+            .style(|_t| container::Style {
+                background: Some(iced::Background::Color(Color::from_rgb(0.08, 0.08, 0.1))),
+                border: iced::Border {
+                    color: style::ACCENT,
+                    width: 1.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        } else {
+            container(Space::new())
         };
 
-        // Sidebar / Footer
-        let is_busy = self.current_install.is_some();
-        let can_install = !self.selected_apps.is_empty() && !is_busy;
+        column![
+            container(scrollable(main_content).height(Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(40)
+                .style(style::main_container),
+            bottom_bar
+        ]
+        .into()
+    }
 
-        let install_btn = button("Install Selected")
-            .padding(15)
-            .width(Length::Fill)
-            .on_press_maybe(if can_install {
-                Some(Message::StartInstall)
-            } else {
-                None
-            });
+    fn view_installing(&self) -> Element<'_, Message> {
+        let title = text("Installing Applications...")
+            .size(24)
+            .color(style::TEXT_PRIMARY);
 
-        let log_view =
-            scrollable(column(self.logs.iter().map(|log| text(log).size(14).into())).spacing(5))
-                .height(Length::Fixed(150.0));
+        let bar = container(progress_bar(0.0..=1.0, self.progress).style(|_theme| {
+            iced::widget::progress_bar::Style {
+                background: iced::Background::Color(style::BG_CARD),
+                bar: iced::Background::Color(style::ACCENT),
+                border: iced::Border::default(),
+            }
+        }))
+        .height(10)
+        .width(Length::Fill);
 
-        let main_layout = column![
-            text("The Init Project")
-                .size(30)
-                .font(iced::Font::MONOSPACE),
-            container(content).height(Length::Fill).width(Length::Fill),
-            install_btn,
-            text("Status Log:").size(16).font(iced::Font::MONOSPACE),
+        let log_view = scrollable(
+            column(
+                self.install_log
+                    .iter()
+                    .map(|l| text(l).color(style::TEXT_SECONDARY).into()),
+            )
+            .spacing(5),
+        )
+        .height(Length::Fill);
+
+        let content = column![
+            title,
+            Space::new().height(20.0),
+            bar,
+            Space::new().height(20.0),
             container(log_view)
-                .style(|_| container::Style {
-                    border: Border {
-                        color: Color::from_rgb(0.3, 0.3, 0.3),
-                        width: 1.0,
-                        radius: 4.0.into()
+                .padding(20)
+                .style(|_t| container::Style {
+                    background: Some(iced::Background::Color(style::BG_CARD)),
+                    border: iced::Border {
+                        radius: 8.0.into(),
+                        ..Default::default()
                     },
                     ..Default::default()
                 })
-                .padding(10)
+                .height(Length::Fill)
+                .width(Length::Fill)
         ]
-        .spacing(20)
-        .padding(20);
+        .spacing(10)
+        .padding(40);
 
-        container(main_layout).height(Length::Fill).into()
+        container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(style::main_container)
+            .into()
     }
 }
 
-async fn load_apps() -> Result<Vec<App>, String> {
-    let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    let path = current_dir.join("apps.toml");
+// FIX: Helper returns Arc to satisfy Message requirements
+async fn initialize_app() -> Result<(Vec<App>, Arc<Box<dyn PackageManager>>), String> {
+    let current = std::env::current_dir().map_err(|e| e.to_string())?;
+    let path = current.join("apps.toml");
 
-    // Convert path to string for logging/errors
-    let path_str = path.to_str().unwrap_or("apps.toml");
-
-    match manifest::load_manifest(path_str).await {
-        Ok(manifest) => Ok(manifest.apps),
-        Err(e) => Err(format!("Could not load {}: {}", path_str, e)),
-    }
-}
-
-async fn install_app(app_id: String, package_id: String) -> (String, Result<(), String>) {
-    let manager = detectors::get_system_manager();
-    let result = manager
-        .install(&package_id)
+    let manifest = manifest::load_manifest(path.to_str().unwrap())
         .await
-        .map_err(|e| e.to_string());
-    (app_id, result)
+        .map_err(|e| format!("Manifest Error: {}", e))?;
+
+    let manager = detectors::get_system_manager();
+
+    // Wrap the manager in Arc
+    Ok((manifest.apps, Arc::new(manager)))
 }

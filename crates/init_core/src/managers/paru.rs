@@ -3,6 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::process::Command;
 
+#[derive(Debug)]
 pub struct Paru;
 
 #[async_trait]

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use tokio::process::Command;
 
 // A unit struct - it holds no data, just behavior
+#[derive(Debug)]
 pub struct Pacman;
 
 #[async_trait]

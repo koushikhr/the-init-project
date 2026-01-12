@@ -13,6 +13,7 @@ pub struct App {
     pub name: String,
     pub description: Option<String>,
     pub icon: Option<String>,
+    pub category: Option<String>,
     // Maps "pacman", "winget", "apt" -> "package_id"
     // We use "packages" to match the [apps.packages] in TOML
     pub packages: HashMap<String, String>,
