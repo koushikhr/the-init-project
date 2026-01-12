@@ -129,11 +129,16 @@ impl InitApp {
         let is_available = app.packages.contains_key(&self.active_manager_id);
         let is_selected = self.selected_apps.contains(&app.id);
 
-        // 1. Determine Icon Path (Default if missing)
-        let icon_path = app
-            .icon
-            .clone()
-            .unwrap_or("/home/hrk/programming/rust/init/icons/default.svg".to_string());
+        // 1. Determine Icon Path (Dynamic)
+        let current_dir = std::env::current_dir().unwrap_or_default();
+        let default_icon = current_dir.join("icons").join("default.svg");
+
+        let icon_path = if let Some(path_str) = &app.icon {
+            // If the path in toml is relative ("icons/firefox.svg"), join it with current dir
+            current_dir.join(path_str).to_string_lossy().to_string()
+        } else {
+            default_icon.to_string_lossy().to_string()
+        };
 
         // 2. Build the Icon Widget (SVG vs PNG)
         let icon_widget: Element<'a, Message> = if icon_path.ends_with(".svg") {
@@ -312,10 +317,15 @@ impl InitApp {
 }
 
 async fn load_apps() -> Result<Vec<App>, String> {
-    let path = "/home/hrk/programming/rust/init/apps.toml";
-    match manifest::load_manifest(path).await {
+    let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+    let path = current_dir.join("apps.toml");
+
+    // Convert path to string for logging/errors
+    let path_str = path.to_str().unwrap_or("apps.toml");
+
+    match manifest::load_manifest(path_str).await {
         Ok(manifest) => Ok(manifest.apps),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(format!("Could not load {}: {}", path_str, e)),
     }
 }
 
