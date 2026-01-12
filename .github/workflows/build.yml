@@ -50,7 +50,6 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           copy target/release/init_app.exe init_app.exe
-          copy apps.toml apps.toml
           Compress-Archive -Path init_app.exe, apps.toml -DestinationPath the-init-project-windows.zip
 
       # 5. Package for Linux (Just move binary)
