@@ -3,7 +3,7 @@ set -e
 
 # 1. Configuration
 REPO="koushikhr/the-init-project"
-VERSION="v0.1.0"
+VERSION="v0.1.2"
 INSTALL_DIR="$HOME/.local/bin/init_project"
 BIN_URL="https://github.com/$REPO/releases/download/$VERSION/init_app"
 CONFIG_URL="https://raw.githubusercontent.com/$REPO/master/apps.toml"
