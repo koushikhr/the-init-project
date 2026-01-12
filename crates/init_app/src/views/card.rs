@@ -12,9 +12,14 @@ pub fn view<'a, Message: 'a + Clone>(
     on_toggle: impl Fn(String, bool) -> Message,
 ) -> Element<'a, Message> {
     // 1. Path Logic
-    let current_dir = std::env::current_dir().unwrap_or_default();
+    // Resolve relative to executable, fallback to current dir
+    let base_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
     let raw_path = app.icon.clone().unwrap_or("icons/default.svg".to_string());
-    let abs_path = current_dir.join(&raw_path);
+    let abs_path = base_dir.join(&raw_path);
     let path_str = abs_path.to_string_lossy().to_string();
 
     // 2. Icon Widget (Fixed Size + ContentFit)

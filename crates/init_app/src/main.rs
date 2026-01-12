@@ -472,12 +472,16 @@ impl InitApp {
 
 // FIX: Helper returns Arc to satisfy Message requirements
 async fn initialize_app() -> Result<(Vec<App>, Vec<Arc<Box<dyn PackageManager>>>), String> {
-    let current = std::env::current_dir().map_err(|e| e.to_string())?;
-    let path = current.join("apps.toml");
+    // Try to find apps.toml relative to the executable first, fall back to current dir
+    let path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("apps.toml")))
+        .or_else(|| std::env::current_dir().ok().map(|p| p.join("apps.toml")))
+        .ok_or("Could not determine path to apps.toml".to_string())?;
 
     let manifest = manifest::load_manifest(path.to_str().unwrap())
         .await
-        .map_err(|e| format!("Manifest Error: {}", e))?;
+        .map_err(|e| format!("Manifest Error: {} ({})", e, path.display()))?;
 
     let managers = detectors::detect_managers();
     let managers_arc = managers.into_iter().map(Arc::new).collect();
