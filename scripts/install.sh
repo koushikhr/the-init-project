@@ -2,9 +2,9 @@
 set -e
 
 # --- CONFIGURATION ---
-REPO="https://github.com/koushikhr/the-init-project"
-# This URL points to where to upload the file in Step 4
-DOWNLOAD_URL="https://github.com/koushikhr/the-init-project/releases/download/v0.1.0/the-init-project-linux.tar.gz"
+REPO="koushikhr/the-init-project"
+# FIX: Updated filename to 'the-init-project-linux.tar.gz'
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/v0.1.0/the-init-project-linux.tar.gz"
 # ---------------------
 
 echo "🚀 Initializing Setup..."
@@ -13,7 +13,6 @@ echo "🚀 Initializing Setup..."
 TEMP_DIR=$(mktemp -d)
 
 # 2. Download and Extract
-# We pipe curl output directly to tar to avoid saving the .tar.gz file to disk
 echo "⬇️  Downloading from GitHub..."
 if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$DOWNLOAD_URL" | tar -xz -C "$TEMP_DIR"
@@ -26,8 +25,7 @@ fi
 
 # 3. Run the App
 echo "✅ Starting Init..."
-# We execute inside the directory so it finds apps.toml and icons/
 (cd "$TEMP_DIR" && ./init_app)
 
-# 4. Cleanup (Optional: uncomment to delete after running)
+# 4. Cleanup (Optional)
 # rm -rf "$TEMP_DIR"
