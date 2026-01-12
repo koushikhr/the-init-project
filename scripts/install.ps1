@@ -1,13 +1,13 @@
 # --- CONFIGURATION ---
-$Repo = "https://github.com/koushikhr/the-init-project"
-$Url = "https://github.com/$Repo/releases/latest/download/init-windows.zip"
+$Repo = "koushikhr/the-init-project"
+# MAKE SURE THIS FILENAME MATCHES WHAT YOU UPLOADED
+$Url = "https://github.com/$Repo/releases/download/v0.1.0/the-init-project-windows.zip"
 # ---------------------
 
 Write-Host "🚀 Initializing Setup..." -ForegroundColor Cyan
 
 # 1. Setup Temp Directory
 $InstallDir = Join-Path $env:TEMP "init_bootstrap"
-# Clean up previous runs if they exist
 if (Test-Path $InstallDir) { Remove-Item -Path $InstallDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
@@ -15,6 +15,8 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $ZipPath = Join-Path $InstallDir "init.zip"
 Write-Host "⬇️  Downloading from GitHub..." -ForegroundColor Cyan
 try {
+    # Fix: TLS 1.2 is required for GitHub on older Windows versions
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-RestMethod -Uri $Url -OutFile $ZipPath
 } catch {
     Write-Error "Failed to download. Check your internet connection or if the Release exists."
