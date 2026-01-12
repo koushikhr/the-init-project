@@ -1,0 +1,51 @@
+name: Build Cross-Platform
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+    branches: ["master", "main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: init_app
+            asset_name: init-linux-x64
+          - os: windows-latest
+            artifact_name: init_app.exe
+            asset_name: init-windows-x64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Install Rust Toolchain
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # 2. Install Linux System Dependencies (Required for Iced)
+      - name: Install Linux Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libcairo2-dev libpango1.0-dev libatk1.0-dev libgdk-pixbuf2.0-dev build-essential pkg-config
+
+      # 3. Build the Application
+      # We target the specific package 'init_app' to avoid building examples/tests unnecessarily
+      - name: Build Release
+        run: cargo build --release -p init_app
+
+      # 4. Upload the Binary as an Artifact
+      # This allows you to download the result from the Actions tab
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: target/release/${{ matrix.artifact_name }}
